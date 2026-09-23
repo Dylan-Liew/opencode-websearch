@@ -1,6 +1,6 @@
 {
   "name": "opencode-websearch",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Web search plugin for OpenCode",
   "type": "module",
   "main": "index.ts",

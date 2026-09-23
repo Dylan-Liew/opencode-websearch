@@ -35,18 +35,18 @@ Model-level web search support depends on the provider and model you use.
 
 ## Install
 
-This fork is released from GitHub because the unscoped npm package belongs to the upstream maintainer. Install the v2 release directly from GitHub:
+This fork is released from GitHub because the unscoped npm package belongs to the upstream maintainer. Clone the v2 release to a stable local directory:
 
 ```bash
-opencode plugin add github:Dylan-Liew/opencode-websearch#v1.0.0
+git clone --branch v1.0.1 https://github.com/Dylan-Liew/opencode-websearch ~/.config/opencode/plugins/opencode-websearch
 ```
 
-Or add the Git package specifier to `opencode.json`:
+Then add the checkout directory to `opencode.json`:
 
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugins": ["github:Dylan-Liew/opencode-websearch#v1.0.0"]
+  "plugins": ["/home/you/.config/opencode/plugins/opencode-websearch"]
 }
 ```
 
@@ -98,7 +98,7 @@ ln -sf ~/.config/opencode/opencode-websearch/src/index.ts ~/.config/opencode/plu
 
 OpenCode loads the plugin directly from source at startup.
 
-> When using this symlink setup, remove the Git package specifier from the `plugins` array in `opencode.json` to avoid loading it twice.
+> Keep only one checkout path in the `plugins` array to avoid loading it twice.
 
 ### Commands
 
