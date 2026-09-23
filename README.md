@@ -2,6 +2,9 @@
 
 Native web search for [OpenCode](https://opencode.ai), powered by your model's built-in search capability. No extra API keys or search services required. If you're on a supported provider, it works without any extra setup.
 
+> [!IMPORTANT]
+> Version 1.x supports OpenCode v2 only. OpenCode v1 is no longer supported; use the final 0.x release if you must remain on v1.
+
 Inspired by Claude Code's WebSearch tool.
 
 ## Example
@@ -32,11 +35,18 @@ Model-level web search support depends on the provider and model you use.
 
 ## Install
 
-Add the plugin to your `opencode.json` and OpenCode will install it automatically on startup.
+This fork is released from GitHub because the unscoped npm package belongs to the upstream maintainer. Install the v2 release directly from GitHub:
+
+```bash
+opencode plugin add github:Dylan-Liew/opencode-websearch#v1.0.0
+```
+
+Or add the Git package specifier to `opencode.json`:
 
 ```json
 {
-  "plugin": ["opencode-websearch"]
+  "$schema": "https://opencode.ai/config.json",
+  "plugins": ["github:Dylan-Liew/opencode-websearch#v1.0.0"]
 }
 ```
 
@@ -79,7 +89,7 @@ By default the plugin uses your active model. The optional `"websearch"` flag le
 Clone the repo and symlink the source entry into your OpenCode plugin directory:
 
 ```sh
-git clone https://github.com/emilsvennesson/opencode-websearch ~/.config/opencode/opencode-websearch
+git clone https://github.com/Dylan-Liew/opencode-websearch ~/.config/opencode/opencode-websearch
 cd ~/.config/opencode/opencode-websearch
 bun install
 mkdir -p ~/.config/opencode/plugin
@@ -88,7 +98,7 @@ ln -sf ~/.config/opencode/opencode-websearch/src/index.ts ~/.config/opencode/plu
 
 OpenCode loads the plugin directly from source at startup.
 
-> When using this symlink setup, remove `"opencode-websearch"` from the `plugin` array in `opencode.json` to avoid loading it twice.
+> When using this symlink setup, remove the Git package specifier from the `plugins` array in `opencode.json` to avoid loading it twice.
 
 ### Commands
 

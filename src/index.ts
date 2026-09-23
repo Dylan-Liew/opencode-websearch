@@ -5,7 +5,7 @@ import {
   ProviderType,
   SearchConfig,
 } from "./types.js";
-import { Plugin, tool } from "@opencode-ai/plugin";
+import { Plugin } from "@opencode/plugin";
 import {
   ProviderData,
   formatNoProviderError,
@@ -14,8 +14,8 @@ import {
   resolveModelOverrides,
 } from "./config.js";
 import { getCurrentMonthYear } from "./helpers.js";
-import { resolveChatGPTCredentials } from "./providers/chatgpt/auth.js";
-import { resolveCopilotCredentials } from "./providers/copilot/auth.js";
+import { CHATGPT_DEFAULT_BASE_URL } from "./providers/chatgpt/constants.js";
+import { COPILOT_DEFAULT_BASE_URL } from "./providers/copilot/constants.js";
 import { dispatchErrorMessage, dispatchSearch } from "./providers/index.js";
 import {
   RESOLUTION_PRIORITY,
@@ -133,23 +133,6 @@ const detectActiveProviderType = (
   return detectProviderTypeFromProviderID(active.providerID);
 };
 
-const hasConfiguredOpenAIBaseURL = (resolutions: ProviderResolutionMap): boolean => {
-  const openaiResolution = resolutions.openai;
-  if (!openaiResolution) {
-    return false;
-  }
-
-  const { baseURL } = openaiResolution.credentials;
-  if (typeof baseURL !== "string") {
-    return false;
-  }
-
-  return baseURL.trim() !== "";
-};
-
-const shouldAttachChatGPTResolution = (resolutions: ProviderResolutionMap): boolean =>
-  !hasConfiguredOpenAIBaseURL(resolutions);
-
 // ── Model resolution ───────────────────────────────────────────────────
 
 interface ResolvedProvider {
@@ -263,49 +246,70 @@ interface ProviderState {
   resolutions: ProviderResolutionMap;
 }
 
-const resolveProviderState = async (
-  client: {
-    config: { providers: () => Promise<{ data?: { providers: unknown[] } }> };
-    path: {
-      get: (options?: { query?: { directory?: string } }) => Promise<{ data?: { state?: string } }>;
-    };
-  },
-  directory: string,
-): Promise<ProviderState> => {
-  const { data } = await client.config.providers();
-  if (!data) {
-    return { list: [], resolutions: {} };
+const resolveProviderState = async (ctx: Plugin.Context): Promise<ProviderState> => {
+  const [providers, models] = await Promise.all([ctx.provider.list(), ctx.model.list()]);
+  const list: ProviderData[] = [];
+  const oauth: ProviderResolutionMap = {};
+  for (const provider of providers.data) {
+    const options = { ...provider.settings };
+    const connection = await ctx.integration.connection.active(
+      provider.integrationID ?? provider.id,
+    );
+    const credential = connection && (await ctx.integration.connection.resolve(connection));
+    if (credential?.type === "key") {
+      options.apiKey = credential.key;
+    }
+    const entries = models.data.filter((model) => model.providerID === provider.id);
+    list.push({
+      id: provider.id,
+      models: Object.fromEntries(
+        entries.map((model) => [
+          model.id,
+          {
+            api: { npm: (model.package ?? provider.package).replace(/^aisdk:/, "") },
+            id: model.id,
+            options: model.settings ?? {},
+          },
+        ]),
+      ),
+      options,
+    });
+    if (credential?.type !== "oauth") {
+      continue;
+    }
+    if (provider.id === "openai" && !options.baseURL) {
+      oauth.chatgpt = {
+        credentials: {
+          accountId: credential.metadata?.accountID as string | undefined,
+          apiKey: credential.access,
+          baseURL: CHATGPT_DEFAULT_BASE_URL,
+        },
+        providerType: "chatgpt",
+      };
+    }
+    if (provider.id === "github-copilot") {
+      let baseURL = COPILOT_DEFAULT_BASE_URL;
+      const enterprise = credential.metadata?.enterpriseUrl;
+      if (typeof enterprise === "string" && enterprise) {
+        baseURL = `https://copilot-api.${enterprise.replace(/^https?:\/\//, "").replace(/\/$/, "")}`;
+      }
+      oauth.copilot = {
+        credentials: { apiKey: credential.refresh, baseURL },
+        providerType: "copilot",
+      };
+    }
   }
-
-  const list = data.providers as ProviderData[];
   const resolutions = resolveFromProviders(list);
-
-  const chatgptCredentials = await resolveChatGPTCredentials(client, directory);
-  if (chatgptCredentials && shouldAttachChatGPTResolution(resolutions)) {
-    const modelOverrides = resolveModelOverrides(list, "openai");
-    resolutions.chatgpt = {
-      credentials: {
-        accountId: chatgptCredentials.accountId,
-        apiKey: chatgptCredentials.apiKey,
-        baseURL: chatgptCredentials.baseURL,
-      },
-      fallbackModel: modelOverrides.fallbackModel,
-      lockedModel: modelOverrides.lockedModel,
-      providerType: "chatgpt",
-    };
+  for (const type of ["chatgpt", "copilot"] as const) {
+    const value = oauth[type];
+    if (value) {
+      let source: "openai" | "copilot" = "openai";
+      if (type === "copilot") {
+        source = "copilot";
+      }
+      resolutions[type] = { ...value, ...resolveModelOverrides(list, source) };
+    }
   }
-
-  const copilotCredentials = await resolveCopilotCredentials(client, directory);
-  if (copilotCredentials) {
-    const modelOverrides = resolveModelOverrides(list, "copilot");
-    resolutions.copilot = {
-      credentials: copilotCredentials,
-      fallbackModel: modelOverrides.fallbackModel,
-      lockedModel: modelOverrides.lockedModel,
-      providerType: "copilot",
-    };
-  }
-
   return { list, resolutions };
 };
 
@@ -332,72 +336,53 @@ const hasAnyProvider = (resolutions: ProviderResolutionMap): boolean => {
 // ── Plugin ─────────────────────────────────────────────────────────────
 
 // oxlint-disable-next-line import/no-default-export -- plugin entry point requires default export
-export default (async (input) => {
-  let state: ProviderState | null = null;
-  const activeModels = new Map<string, ActiveModel>();
-
-  return {
-    "chat.message": async (hookInput) => {
-      if (hookInput.model) {
-        activeModels.set(hookInput.sessionID, {
-          modelID: hookInput.model.modelID,
-          providerID: hookInput.model.providerID,
-        });
-      }
-    },
-
-    tool: {
-      "web-search": tool({
-        args: {
-          query: tool.schema.string().min(MIN_QUERY_LENGTH).describe("The search query to use"),
-        },
-        description: `- Allows OpenCode to search the web and use the results to inform responses
-- Provides up-to-date information for current events and recent data
-- Returns search result information formatted as search result blocks, including links as markdown hyperlinks
-- Use this tool for accessing information beyond the model's knowledge cutoff
-- Searches are performed automatically within a single API call
-
-CRITICAL REQUIREMENT - You MUST follow this:
-  - After answering the user's question, you MUST include a "Sources:" section at the end of your response
-  - In the Sources section, list all relevant URLs from the search results as markdown hyperlinks: [Title](URL)
-  - This is MANDATORY - never skip including sources in your response
-  - Example format:
-
-    [Your answer here]
-
-    Sources:
-    - [Source Title 1](https://example.com/1)
-    - [Source Title 2](https://example.com/2)
-
-Usage notes:
-IMPORTANT - Use the correct year in search queries:
-  - It is currently ${getCurrentMonthYear()}. You MUST use this when searching for recent information, documentation, or current events.
-  - Example: If the user asks for "latest React docs", search for "React documentation" with the current year, NOT last year`,
-
-        async execute(args, context) {
-          if (!state) {
-            state = await resolveProviderState(input.client, input.directory);
-          }
-
+export default Plugin.define({
+  id: "opencode-websearch",
+  async setup(ctx) {
+    await ctx.tool.transform((editor) => {
+      editor.add({
+        description: `Search the web for current information. Cite relevant source URLs as Markdown links in your response. It is currently ${getCurrentMonthYear()}.`,
+        async execute(input, context) {
+          const args = input as { query: string };
+          const state = await resolveProviderState(ctx);
           if (!hasAnyProvider(state.resolutions)) {
-            return formatNoProviderError();
+            return { content: formatNoProviderError() };
           }
-
-          const active = activeModels.get(context.sessionID);
-          const activeType = detectActiveProviderType(active, state.list);
-          const resolved = resolveSearchProvider(state.resolutions, active, activeType);
-
+          const session = await ctx.session.get({ sessionID: context.sessionID });
+          let active: ActiveModel | undefined;
+          if (session.model) {
+            active = { modelID: session.model.id, providerID: session.model.providerID };
+          }
+          const resolved = resolveSearchProvider(
+            state.resolutions,
+            active,
+            detectActiveProviderType(active, state.list),
+          );
           if (!resolved) {
-            return formatUnsupportedProviderError(active?.modelID ?? "unknown");
+            return { content: formatUnsupportedProviderError(active?.modelID ?? "unknown") };
           }
-
           try {
-            return await dispatchSearch(resolved.providerType, resolved.config, args.query);
+            return {
+              content: await dispatchSearch(resolved.providerType, resolved.config, args.query),
+            };
           } catch (error) {
-            return dispatchErrorMessage(resolved.providerType, error);
+            return { content: dispatchErrorMessage(resolved.providerType, error) };
           }
         },
-      }),
-    },
-  };
-}) satisfies Plugin;
+        input: {
+          additionalProperties: false,
+          properties: {
+            query: {
+              description: "The search query to use",
+              minLength: MIN_QUERY_LENGTH,
+              type: "string",
+            },
+          },
+          required: ["query"],
+          type: "object",
+        },
+        name: "web-search",
+      });
+    });
+  },
+});
